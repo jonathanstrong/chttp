@@ -2,11 +2,14 @@ extern crate curl;
 pub extern crate http;
 #[cfg(feature = "json")]
 extern crate json;
+extern crate os_pipe;
 extern crate ringtail;
+extern crate slab;
 
 pub mod body;
 pub mod client;
 pub mod error;
+mod manager;
 pub mod options;
 mod transport;
 

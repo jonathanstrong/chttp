@@ -14,7 +14,9 @@ default = []
 [dependencies]
 curl = "0.4"
 http = "0.1"
+os_pipe = "0.6"
 ringtail = "0.1"
+slab = "0.4"
 
 [dependencies.json]
 version = "0.11"
