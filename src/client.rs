@@ -3,6 +3,10 @@ use std::io::Read;
 use std::sync::{Arc, Mutex, Weak};
 use transport::Transport;
 use super::*;
+use futures;
+use futures::channel::oneshot;
+use futures::prelude::*;
+use manager;
 
 
 /// An HTTP client for making requests.
@@ -10,27 +14,21 @@ use super::*;
 /// The client maintains a connection pool internally and is expensive to create, so we recommend re-using your clients
 /// instead of discarding and recreating them.
 pub struct Client {
-    max_connections: Option<u16>,
     options: Options,
-    transport_pool: Arc<Mutex<Vec<Transport>>>,
-    transport_count: u16,
 }
 
 impl Default for Client {
     fn default() -> Client {
-        Client::new()
+        Client::new(Options::default())
     }
 }
 
 impl Client {
-    /// Create a new HTTP client builder.
-    pub fn builder() -> ClientBuilder {
-        ClientBuilder::default()
-    }
-
-    /// Create a new HTTP client using the default configuration.
-    pub fn new() -> Self {
-        Self::builder().build()
+    /// Create a new HTTP client using the given options.
+    pub fn new(options: Options) -> Self {
+        Self {
+            options: options,
+        }
     }
 
     /// Sends a GET request.
@@ -59,120 +57,88 @@ impl Client {
 
     /// Sends a request and returns the response.
     pub fn send(&self, request: Request) -> Result<Response, Error> {
-        if let Some(mut transport) = self.get_transport() {
-            let mut response = transport.execute(request)?;
-            let stream = self.create_stream(transport);
-
-            response
-                .body(Body::from_reader(stream))
-                .map_err(Into::into)
-        } else {
-            Err(Error::TooManyConnections)
-        }
+        futures::executor::block_on(self.send_async(request))
     }
 
-    fn get_transport(&self) -> Option<Transport> {
-        let mut pool = self.transport_pool.lock().unwrap();
+    fn send_async(&self, request: Request) -> impl Future<Item=Response, Error=Error> {
+        let easy_handle = create_curl_request(request, &self.options)?;
 
-        if let Some(transport) = pool.pop() {
-            return Some(transport);
-        }
+        let (sender, receiver) = oneshot::channel();
 
-        if let Some(max) = self.max_connections {
-            if self.transport_count >= max {
-                return None;
-            }
-        }
+        self.manager.begin(easy_handle, sender)?;
 
-        Some(self.create_transport())
-    }
-
-    fn create_transport(&self) -> Transport {
-        Transport::with_options(self.options.clone())
-    }
-
-    fn create_stream(&self, transport: Transport) -> Stream {
-        Stream {
-            pool: Arc::downgrade(&self.transport_pool),
-            transport: Some(transport),
-        }
+        receiver.then(|result| match result {
+            Ok(Ok(response)) => futures::future::ok(response),
+            Ok(Err(e)) => futures::future::err(e),
+            Err(canceled) => unimplemented!(),
+        })
     }
 }
 
+fn create_curl_request(request: Request, options: &Options) -> Result<(), Error> {
+    let mut easy = curl::easy::Easy2::new(Collector {
+        data: self.data.clone(),
+    };
 
-/// An HTTP client builder.
-#[derive(Clone)]
-pub struct ClientBuilder {
-    max_connections: Option<u16>,
-    options: Options,
-}
+    easy.signal(false)?;
 
-impl Default for ClientBuilder {
-    fn default() -> ClientBuilder {
-        ClientBuilder {
-            max_connections: Some(8),
-            options: Default::default(),
+    // Configure connection based on our options struct.
+    if let Some(timeout) = options.timeout {
+        easy.timeout(timeout)?;
+    }
+    easy.connect_timeout(options.connect_timeout)?;
+    easy.tcp_nodelay(options.tcp_nodelay)?;
+    if let Some(interval) = options.tcp_keepalive {
+        easy.tcp_keepalive(true)?;
+        easy.tcp_keepintvl(interval)?;
+    }
+
+    // Configure redirects.
+    match options.redirect_policy {
+        RedirectPolicy::None => {
+            easy.follow_location(false)?;
+        }
+        RedirectPolicy::Follow => {
+            easy.follow_location(true)?;
+        }
+        RedirectPolicy::Limit(max) => {
+            easy.follow_location(true)?;
+            easy.max_redirections(max)?;
         }
     }
-}
 
-impl ClientBuilder {
-    /// Set the maximum number of connections the client should keep in its connection pool.
-    ///
-    /// To allow simultaneous requests, the client keeps a pool of multiple transports to pull from when performing a
-    /// request. Reusing transports also improves performance if TCP keepalive is enabled. Increasing this value may
-    /// improve performance when making many or frequent requests to the same server, but will also use more memory.
-    ///
-    /// Setting this to `0` will cause the client to not reuse any connections and the client will open a new connection
-    /// for every request. Setting this to `None` will allow unlimited simultaneous connections.
-    ///
-    /// The default value is `Some(8)`.
-    pub fn max_connections(mut self, max: Option<u16>) -> Self {
-        self.max_connections = max;
-        self
+    // Set a preferred HTTP version to negotiate.
+    if let Some(version) = options.preferred_http_version {
+        easy.http_version(match version {
+            http::Version::HTTP_10 => curl::easy::HttpVersion::V10,
+            http::Version::HTTP_11 => curl::easy::HttpVersion::V11,
+            http::Version::HTTP_2 => curl::easy::HttpVersion::V2,
+            _ => curl::easy::HttpVersion::Any,
+        })?;
     }
 
-    /// Set the connection options to use.
-    pub fn options(mut self, options: Options) -> Self {
-        self.options = options;
-        self
+    // Set a proxy to use.
+    if let Some(ref proxy) = options.proxy {
+        easy.proxy(&format!("{}", proxy))?;
     }
 
-    /// Build an HTTP client using the configured options.
-    pub fn build(self) -> Client {
-        Client {
-            max_connections: self.max_connections,
-            options: self.options,
-            transport_pool: Arc::new(Mutex::new(Vec::new())),
-            transport_count: 0,
-        }
+    // Set the request data according to the request given.
+    easy.custom_request(request.method().as_str())?;
+    easy.url(&format!("{}", request.uri()))?;
+
+    let mut headers = curl::easy::List::new();
+    for (name, value) in request.headers() {
+        let header = format!("{}: {}", name.as_str(), value.to_str().unwrap());
+        headers.append(&header)?;
     }
-}
+    easy.http_headers(headers)?;
 
-
-/// Stream that reads the response body incrementally.
-///
-/// A stream object will hold on to the connection that initiated the request until the entire response is read or the
-/// stream is dropped.
-struct Stream {
-    pool: Weak<Mutex<Vec<Transport>>>,
-    transport: Option<Transport>,
-}
-
-impl Read for Stream {
-    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        self.transport.as_mut().unwrap().read(buffer)
+    // Set the request body.
+    let body = request.into_parts().1;
+    if !body.is_empty() {
+        easy.upload(true)?;
     }
-}
+    self.data.borrow_mut().request_body = body;
 
-impl Drop for Stream {
-    fn drop(&mut self) {
-        if let Some(transport) = self.transport.take() {
-            if let Some(pool) = self.pool.upgrade() {
-                pool.lock()
-                    .unwrap()
-                    .push(transport);
-            }
-        }
-    }
+    Ok(easy)
 }

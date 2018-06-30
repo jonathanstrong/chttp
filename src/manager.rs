@@ -3,8 +3,8 @@ use curl;
 use error::Error;
 use http;
 use os_pipe;
-use ringtail::ByteBuffer;
 use slab::Slab;
+use std::io;
 use std::io::prelude::*;
 use std::mem;
 use std::os::unix::io::AsRawFd;
@@ -16,21 +16,16 @@ use std::time::Duration;
 
 const DEFAULT_TIMEOUT_MS: u64 = 1000;
 
-enum Message {
-    Begin(curl::easy::Easy),
-    Unpause(Token),
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Token(usize);
 
-pub struct Manager {
+pub struct ManagerHandle {
     message_sender: mpsc::Sender<Message>,
     notify_writer: os_pipe::PipeWriter,
     join_handle: thread::JoinHandle<()>,
 }
 
-impl Manager {
+impl ManagerHandle {
     /// Create a new manager.
     ///
     /// This is a fairly heavy operation.
@@ -43,7 +38,7 @@ impl Manager {
             notify_fd.set_fd(notify_reader.as_raw_fd());
             notify_fd.poll_on_read(true);
 
-            let mut inner = Inner {
+            let mut inner = Manager {
                 multi: curl::multi::Multi::new(),
                 handles: Slab::new(),
                 message_receiver: message_receiver,
@@ -51,7 +46,7 @@ impl Manager {
                 wait_fds: [notify_fd],
             };
 
-            inner.mainloop();
+            inner.run();
         });
 
         Ok(Self {
@@ -61,24 +56,27 @@ impl Manager {
         })
     }
 
-    pub fn notify(&mut self) -> Result<(), Error> {
+    fn send(&mut self, message: Message) -> Result<(), Error> {
+        self.message_sender.send(message)?;
         self.notify_writer.write(&[0])?;
         Ok(())
     }
 }
 
-struct Inner {
+struct Manager {
     /// A curl multi handle used to execute requests.
     multi: curl::multi::Multi,
+
     /// Handles for active requests.
-    handles: Slab<curl::multi::Easy2Handle<TransferState>>,
+    handles: Slab<ActiveRequest>,
+
     message_receiver: mpsc::Receiver<Message>,
     notify_reader: os_pipe::PipeReader,
     wait_fds: [curl::multi::WaitFd; 1],
 }
 
-impl Inner {
-    fn mainloop(&mut self) {
+impl Manager {
+    fn run(&mut self) {
         loop {
             // TODO: Error handling
             self.dispatch();
@@ -132,15 +130,17 @@ impl Inner {
         }
     }
 
-    fn insert_handle(&mut self, easy: curl::easy::Easy2<TransferState>) -> Result<Token, Error> {
+    fn activate_request(&mut self, request: IncomingRequest) -> Result<Token, Error> {
         // Register the easy handle with the multi handle.
-        let mut active_handle = self.multi.add2(easy)?;
+        let mut active_handle = self.multi.add2(request.easy_handle)?;
 
         // Assign a token and insert.
         let entry = self.handles.vacant_entry();
         let token = entry.key();
         active_handle.set_token(token)?;
-        entry.insert(active_handle);
+        entry.insert(ActiveRequest {
+            easy_handle: active_handle,
+        });
 
         Ok(Token(token))
     }
@@ -153,17 +153,49 @@ impl Inner {
     }
 }
 
+enum Message {
+    Begin(IncomingRequest),
+    Unpause(Token),
+}
+
+struct IncomingRequest {
+    easy_handle: curl::easy::Easy2<TransferState>,
+}
+
+impl IncomingRequest {
+    fn new() -> Self {
+        Self {
+            easy_handle: curl::easy::Easy2::new(TransferState::new()),
+        }
+    }
+}
+
+struct ActiveRequest {
+    easy_handle: curl::multi::Easy2Handle<TransferState>,
+}
+
+impl ActiveRequest {
+    fn get_state(&self) -> &TransferState {
+        self.easy_handle.get_ref()
+    }
+}
 
 /// Receives callbacks from curl and incrementally constructs a response.
-struct TransferState {
+enum TransferHandler {
     /// Request body to be sent.
-    request_body: Body,
+    body: Body,
+
     /// Builder for the response object.
     response: http::response::Builder,
-    /// Indicates if the header has been read completely.
-    header_complete: bool,
+
     /// Temporary buffer for the response body.
     buffer: ByteBuffer,
+}
+
+impl TransferHandler {
+    fn new() -> Self {
+        unimplemented!();
+    }
 }
 
 impl curl::easy::Handler for TransferState {
@@ -232,3 +264,16 @@ impl curl::easy::Handler for TransferState {
     }
 }
 
+/// I/O stream for a single active transfer.
+pub struct TransferStream {}
+
+impl Read for TransferStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.len() == 0 {
+            return Ok(0);
+        }
+
+        // self.transport.as_mut().unwrap().read(buffer)
+        unimplemented!();
+    }
+}

@@ -1,4 +1,5 @@
 extern crate curl;
+extern crate futures;
 pub extern crate http;
 #[cfg(feature = "json")]
 extern crate json;

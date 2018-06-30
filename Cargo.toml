@@ -13,9 +13,10 @@ default = []
 
 [dependencies]
 curl = "0.4"
+futures = "0.2.1"
 http = "0.1"
 os_pipe = "0.6"
-ringtail = "0.1"
+ringtail = "0.2"
 slab = "0.4"
 
 [dependencies.json]

@@ -1,4 +1,3 @@
-use ringtail::ByteBuffer;
 use curl;
 use http;
 use std::cell::RefCell;
