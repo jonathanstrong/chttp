@@ -46,15 +46,13 @@ struct Data {
     buffer: ByteBuffer,
 }
 
-impl Transport {
-    /// Create a new transport.
-    ///
-    /// Initializing a transport is an expensive operation, so be sure to re-use your transports instead of discarding
-    /// and recreating them.
-    pub fn new() -> Transport {
+impl Default for Transport {
+    fn default() -> Self {
         Transport::with_options(Options::default())
     }
+}
 
+impl Transport {
     /// Create a new transport with the given options.
     pub fn with_options(options: Options) -> Transport {
         let data = Rc::new(RefCell::new(Data {
@@ -163,6 +161,10 @@ impl Transport {
                 easy.follow_location(true)?;
                 easy.max_redirections(max)?;
             }
+        }
+
+        if let Some(ref ssl_cipher_list) = self.options.ssl_cipher_list {
+            easy.ssl_cipher_list(ssl_cipher_list.as_str())?;
         }
 
         // Set a preferred HTTP version to negotiate.

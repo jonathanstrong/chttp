@@ -52,6 +52,26 @@ pub struct Options {
     /// - **`socks5`**: SOCKS5 Proxy.
     /// - **`socks5h`**: SOCKS5 Proxy. Proxy resolves URL hostname.
     pub proxy: Option<Uri>,
+
+    /// Specify ciphers to use for TLS.
+    ///
+    /// Holds the list of ciphers to use for the SSL connection. The list must be syntactically correct, it consists of one or more cipher strings separated by colons. Commas or spaces are also acceptable separators but colons are normally used, !, - and + can be used as operators.
+    ///
+    /// For OpenSSL and GnuTLS valid examples of cipher lists include 'RC4-SHA', ´SHA1+DES´, 'TLSv1' and 'DEFAULT'. The default list is normally set when you compile OpenSSL.
+    ///
+    /// You'll find more details about cipher lists on this URL:
+    ///
+    /// https://www.openssl.org/docs/apps/ciphers.html
+    ///
+    /// For NSS, valid examples of cipher lists include 'rsa_rc4_128_md5', ´rsa_aes_128_sha´, etc. With NSS you don't add/remove ciphers. If one uses this option then all known ciphers are disabled and only those passed in are enabled.
+    ///
+    /// You'll find more details about the NSS cipher lists on this URL:
+    ///
+    /// http://git.fedorahosted.org/cgit/mod_nss.git/plain/docs/mod_nss.html#Directives
+    ///
+    /// By default this option is not set and corresponds to CURLOPT_SSL_CIPHER_LIST.
+    ///
+    pub ssl_cipher_list: Option<String>,
 }
 
 impl Default for Options {
@@ -65,6 +85,7 @@ impl Default for Options {
             tcp_nodelay: false,
             auto_referer: false,
             proxy: None,
+            ssl_cipher_list: None,
         }
     }
 }
