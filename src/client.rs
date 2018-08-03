@@ -4,33 +4,40 @@ use std::sync::{Arc, Mutex, Weak};
 use transport::Transport;
 use super::*;
 
+const PRELOADED_TRANSPORTS: usize = 32;
+
 
 /// An HTTP client for making requests.
 ///
 /// The client maintains a connection pool internally and is expensive to create, so we recommend re-using your clients
 /// instead of discarding and recreating them.
 pub struct Client {
-    max_connections: Option<u16>,
+    //max_connections: Option<u16>,
     options: Options,
     transport_pool: Arc<Mutex<Vec<Transport>>>,
-    transport_count: u16,
+    //transport_count: u16,
 }
 
 impl Default for Client {
-    fn default() -> Client {
-        Client::new()
+    fn default() -> Self {
+        let options: Options = Default::default();
+        let mut transport_pool = Vec::with_capacity(PRELOADED_TRANSPORTS);
+        for _ in 0..PRELOADED_TRANSPORTS {
+            transport_pool.push(Transport::with_options(options.clone()));
+        }
+        let transport_pool = Arc::new(Mutex::new(transport_pool));
+        Self { options, transport_pool }
     }
 }
 
 impl Client {
-    /// Create a new HTTP client builder.
-    pub fn builder() -> ClientBuilder {
-        ClientBuilder::default()
-    }
-
-    /// Create a new HTTP client using the default configuration.
-    pub fn new() -> Self {
-        Self::builder().build()
+    pub fn with_options(options: Options) -> Self {
+        let mut transport_pool = Vec::with_capacity(PRELOADED_TRANSPORTS);
+        for _ in 0..PRELOADED_TRANSPORTS {
+            transport_pool.push(Transport::with_options(options.clone()));
+        }
+        let transport_pool = Arc::new(Mutex::new(transport_pool));
+        Self { options, transport_pool }
     }
 
     /// Sends a GET request.
@@ -71,6 +78,8 @@ impl Client {
         }
     }
 
+    /// Note - this can no longer fail, as `max_connections` check disabled
+    ///
     fn get_transport(&self) -> Option<Transport> {
         let mut pool = self.transport_pool.lock().unwrap();
 
@@ -78,11 +87,11 @@ impl Client {
             return Some(transport);
         }
 
-        if let Some(max) = self.max_connections {
-            if self.transport_count >= max {
-                return None;
-            }
-        }
+        // if let Some(max) = self.max_connections {
+        //     if self.transport_count >= max {
+        //         return None;
+        //     }
+        // }
 
         Some(self.create_transport())
     }
@@ -98,57 +107,6 @@ impl Client {
         }
     }
 }
-
-
-/// An HTTP client builder.
-#[derive(Clone)]
-pub struct ClientBuilder {
-    max_connections: Option<u16>,
-    options: Options,
-}
-
-impl Default for ClientBuilder {
-    fn default() -> ClientBuilder {
-        ClientBuilder {
-            max_connections: Some(8),
-            options: Default::default(),
-        }
-    }
-}
-
-impl ClientBuilder {
-    /// Set the maximum number of connections the client should keep in its connection pool.
-    ///
-    /// To allow simultaneous requests, the client keeps a pool of multiple transports to pull from when performing a
-    /// request. Reusing transports also improves performance if TCP keepalive is enabled. Increasing this value may
-    /// improve performance when making many or frequent requests to the same server, but will also use more memory.
-    ///
-    /// Setting this to `0` will cause the client to not reuse any connections and the client will open a new connection
-    /// for every request. Setting this to `None` will allow unlimited simultaneous connections.
-    ///
-    /// The default value is `Some(8)`.
-    pub fn max_connections(mut self, max: Option<u16>) -> Self {
-        self.max_connections = max;
-        self
-    }
-
-    /// Set the connection options to use.
-    pub fn options(mut self, options: Options) -> Self {
-        self.options = options;
-        self
-    }
-
-    /// Build an HTTP client using the configured options.
-    pub fn build(self) -> Client {
-        Client {
-            max_connections: self.max_connections,
-            options: self.options,
-            transport_pool: Arc::new(Mutex::new(Vec::new())),
-            transport_count: 0,
-        }
-    }
-}
-
 
 /// Stream that reads the response body incrementally.
 ///

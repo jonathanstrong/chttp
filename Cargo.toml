@@ -12,7 +12,8 @@ repository = "https://github.com/sagebind/chttp"
 default = []
 
 [dependencies]
-curl = "0.4"
+#curl = "0.4"
+curl = { path = "../curl-rust", default-features = false, features = ["wolfssl"] }
 http = "0.1"
 log = "0.4"
 ringtail = "0.1"
