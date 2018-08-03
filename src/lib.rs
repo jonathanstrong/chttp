@@ -4,6 +4,8 @@ pub extern crate http;
 extern crate json;
 extern crate ringtail;
 
+pub use curl::Version;
+
 pub mod body;
 pub mod client;
 pub mod error;
